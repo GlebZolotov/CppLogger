@@ -7,9 +7,11 @@
 #include <algorithm>
 
 namespace LogLevel {
-    enum Level { DEBUG, INFO, WARNING, ERROR, CRITICAL };
+    enum Level { TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL };
     std::string to_str(Level a) {
         switch (a) {
+        case TRACE:
+            return std::string("TRACE");
         case DEBUG:
             return std::string("DEBUG");
         case INFO:
@@ -28,25 +30,26 @@ namespace LogLevel {
 
 class PrimitiveMsg {
     private:
-        std::string msg;
+        const std::string & msg;
         LogLevel::Level log_level;
         std::thread::id thr_id;
         std::time_t t;
     public:
-        PrimitiveMsg(std::string && rhs, LogLevel::Level l): 
+        PrimitiveMsg(const std::string & rhs, LogLevel::Level l): 
             msg(rhs), 
             log_level(l), 
             thr_id(std::this_thread::get_id()), 
             t(std::time(0)) {}
         PrimitiveMsg(PrimitiveMsg && rhs): 
-            msg(std::move(rhs.msg)), 
+            msg(rhs.msg), 
             log_level(rhs.log_level), 
             thr_id(rhs.thr_id), 
             t(rhs.t) {}
-        std::string & get_msg() { return msg; }
-        LogLevel::Level get_level() { return log_level; }
-        std::thread::id get_thr() { return thr_id; }
-        std::time_t get_time() { return t; }
+        PrimitiveMsg(const PrimitiveMsg&) = delete;
+        const std::string & get_msg() { return msg; }
+        LogLevel::Level get_level() const { return log_level; }
+        std::thread::id get_thr() const { return thr_id; }
+        std::time_t get_time() const { return t; }
         ~PrimitiveMsg() {}
 };
 
@@ -66,31 +69,46 @@ class Parser {
     private:
         std::vector<std::string> simple_text;
         std::vector< std::pair<std::string, std::string> > vars;
+        bool is_true(const std::string & format) const {
+            int res = 0;
+            for(const char& c : format) {
+                if (c == '<') res++;
+                else if (c == '>') res--;
+
+                if (res > 1 || res < 0) return false;
+            }
+            return res == 0;
+        }
     public:
         Parser(const std::string & format) {
+            if (!is_true(format)) throw std::string("Bad format: bad parentheses sequence");
             std::size_t found = 0;
             std::size_t found_prev = 0;
             while (found != std::string::npos) {
                 found = format.find('<', found);
-                if (found == std::string::npos) continue;
                 simple_text.emplace_back(format.substr(found_prev, found - found_prev));
+                if (found == std::string::npos) return;
                 found_prev = found + 1;
                 found = format.find('>', found);
-                if (found == std::string::npos) throw "Bad format: no '>' for '<' in " + std::to_string(found_prev - 1) + " pos";
                 vars.emplace_back(format.substr(found_prev, found - found_prev), "");
                 found_prev = found + 1;
             }
         }
-        void set_value(const std::string & name, const std::string & value) {
+        Parser& operator=(const Parser&) = default;
+        bool set_value(const std::string & name, const std::string & value) {
             ptrdiff_t pos = std::distance(std::find_if(vars.begin(), vars.end(), [&name](const std::pair<std::string, std::string>& el){ return el.first == name; }), vars.begin());
-            if (pos < vars.size()) vars[pos].second = value;
+            if (pos < vars.size()) {
+                vars[pos].second = value;
+                return true;
+            }
+            return false;
         }
-        std::string get_string() {
+        std::string get_string() const {
             std::string res;
             for(size_t i = 0; i < vars.size(); i++) {
                 res += simple_text[i] + vars[i].second;
             }
-            if (simple_text.size() > vars.size()) res += simple_text[vars.size()];
+            res += simple_text[vars.size()];
             return res;
         }
         ~Parser() {};
@@ -100,31 +118,37 @@ class StructMsg {
     private:
         Parser p;
     public:
-        StructMsg(std::string format): p(format) {}
+        StructMsg(std::string format = ""): p(format) {}
         StructMsg(const StructMsg & in) = default;
+        void set_format(const std::string &f) {
+            Parser n(f);
+            p = n;
+        }
 
-        void set_value(const std::string & name, const std::string & value){ p.set_value(name, value); }
+        bool set_value(const std::string & name, const std::string & value){ return p.set_value(name, value); }
         std::string serialize(PrimitiveMsg * msg) {
-            set_value("msg", msg->get_msg());
-            set_value("level", LogLevel::to_str(msg->get_level()));
-            set_value("time", std::to_string(msg->get_time()));
+            set_value("MSG", msg->get_msg());
+            set_value("LEVEL", LogLevel::to_str(msg->get_level()));
+            set_value("TIME", std::to_string(msg->get_time()));
 
             return p.get_string(); 
         }
         ~StructMsg(){}
 };
 
+using ThrTempls = std::map<std::thread::id, StructMsg>;
+
 class BaseOutputter {
     protected:
         bounded_buffer<PrimitiveMsg *> & buffer;
         virtual void write_msg(std::string) = 0;
         std::atomic<bool> & is_worked;
-        std::map<std::thread::id, StructMsg> & log_templs;
+        ThrTempls & log_templs;
     public:
         BaseOutputter(
             bounded_buffer<PrimitiveMsg *> & in_buf, 
             std::atomic<bool> & in_a, 
-            std::map<std::thread::id, StructMsg> &l
+            ThrTempls &l
         ): 
             buffer(in_buf), 
             is_worked(in_a),
@@ -142,6 +166,12 @@ class BaseOutputter {
 class ConsoleOutputter: public BaseOutputter {
     protected:
         void write_msg(std::string msg) override { std::cout << msg + "\n"; }
+    public:
+        ConsoleOutputter(
+            bounded_buffer<PrimitiveMsg *> & in_buf, 
+            std::atomic<bool> & in_a, 
+            ThrTempls &l
+        ): BaseOutputter(in_buf, in_a, l) {}
 };
 
 // class ThreadData {
@@ -156,12 +186,67 @@ class ConsoleOutputter: public BaseOutputter {
 
 class CppLogger {
     private:
-        std::map<std::thread::id, StructMsg> log_templs;
+        ThrTempls log_templs;
         bounded_buffer< PrimitiveMsg * > buffer;
+        std::atomic<bool> is_work;
         std::unique_ptr<BaseOutputter> out;
         StructMsg base_format;
+
+        const size_t default_capacity = 50;
+
+        CppLogger(): buffer(default_capacity), is_work(false), out(std::make_unique<ConsoleOutputter>(buffer, is_work, log_templs)) {
+            std::cout << "Create CppLogger instance from thread " << std::this_thread::get_id() << std::endl;
+        }
+        ~CppLogger() {}
+        ThrTempls::iterator find_and_insert_thr(std::thread::id thr_id) {
+            ThrTempls::iterator lb = log_templs.lower_bound(thr_id);
+            if(lb == log_templs.end() || log_templs.key_comp()(thr_id, lb->first))
+                log_templs.insert(lb, ThrTempls::value_type(thr_id, base_format));
+        }
     public:
-        CppLogger(std::string format, std::string outputter);
-        void info_msg(std::string && rhs);
-        void put_msg(StructMsg);
+        static CppLogger & get_logger() {
+            static CppLogger logger;
+            return logger;
+        }
+        CppLogger(const CppLogger&) = delete;
+        CppLogger & operator=(const CppLogger&) = delete;
+
+        std::pair<bool, std::string> set_base_format(const std::string &f) { 
+            try {
+                base_format.set_format(f); 
+            } catch (std::string s) {
+                return std::pair<bool, std::string>(false, s);
+            }
+            return std::pair<bool, std::string>(true, "");
+        }
+
+        bool set_glob_value(std::string name, std::string value) { 
+            return base_format.set_value(name, value); 
+        }
+        void reg_thread() { 
+            find_and_insert_thr(std::this_thread::get_id());
+        }
+        bool set_thr_value(std::string name, std::string value) { 
+            ThrTempls::iterator lb = find_and_insert_thr(std::this_thread::get_id());
+            return lb->second.set_value(name, value);
+        }
+
+        void trace_msg(const std::string & msg) {
+            buffer.push_front(new PrimitiveMsg(msg, LogLevel::TRACE));
+        }
+        void debug_msg(const std::string & msg) {
+            buffer.push_front(new PrimitiveMsg(msg, LogLevel::DEBUG));
+        }
+        void info_msg(const std::string & msg) {
+            buffer.push_front(new PrimitiveMsg(msg, LogLevel::INFO));
+        }
+        void warning_msg(const std::string & msg) {
+            buffer.push_front(new PrimitiveMsg(msg, LogLevel::WARNING));
+        }
+        void error_msg(const std::string & msg) {
+            buffer.push_front(new PrimitiveMsg(msg, LogLevel::ERROR));
+        }
+        void critical_msg(const std::string & msg) {
+            buffer.push_front(new PrimitiveMsg(msg, LogLevel::CRITICAL));
+        }
 };
