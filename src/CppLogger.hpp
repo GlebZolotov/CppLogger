@@ -26,7 +26,7 @@ namespace LogLevel {
             return std::string("IT IS NON_FULL SWITCH!!!");
         }
     }
-};
+}
 
 class PrimitiveMsg {
     private:
@@ -63,7 +63,7 @@ std::string get_iso_time() {
                                          "%FT%T.", std::localtime(&coarse)),
                   5, "%03luZ", fine.time_since_epoch().count() % 1000);
     return buffer;
-};
+}
 
 class Parser {
     private:
@@ -202,6 +202,7 @@ class CppLogger {
             ThrTempls::iterator lb = log_templs.lower_bound(thr_id);
             if(lb == log_templs.end() || log_templs.key_comp()(thr_id, lb->first))
                 log_templs.insert(lb, ThrTempls::value_type(thr_id, base_format));
+            return lb;
         }
     public:
         static CppLogger & get_logger() {
