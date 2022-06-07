@@ -5,6 +5,8 @@
 #include <thread>
 #include "boundedbuffer.hpp"
 #include <algorithm>
+#include <regex>
+#include <mutex>
 
 namespace LogLevel {
     enum Level { TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL };
@@ -30,7 +32,7 @@ namespace LogLevel {
 
 class PrimitiveMsg {
     private:
-        const std::string & msg;
+        std::string msg;
         LogLevel::Level log_level;
         std::thread::id thr_id;
         std::time_t t;
@@ -80,7 +82,8 @@ class Parser {
             return res == 0;
         }
     public:
-        Parser(const std::string & format) {
+        Parser(const std::string & f) {
+            std::string format = std::regex_replace(f, std::regex("\\s+"), ""); 
             if (!is_true(format)) throw std::string("Bad format: bad parentheses sequence");
             std::size_t found = 0;
             std::size_t found_prev = 0;
@@ -96,8 +99,8 @@ class Parser {
         }
         Parser& operator=(const Parser&) = default;
         bool set_value(const std::string & name, const std::string & value) {
-            ptrdiff_t pos = std::distance(std::find_if(vars.begin(), vars.end(), [&name](const std::pair<std::string, std::string>& el){ return el.first == name; }), vars.begin());
-            if (pos < vars.size()) {
+            ptrdiff_t pos = std::distance(vars.begin(), std::find_if(vars.begin(), vars.end(), [&name](const std::pair<std::string, std::string>& el){ return el.first == name; }));
+            if (pos < static_cast<long int>(vars.size())) {
                 vars[pos].second = value;
                 return true;
             }
@@ -119,29 +122,32 @@ class StructMsg {
         Parser p;
     public:
         StructMsg(std::string format = ""): p(format) {}
-        StructMsg(const StructMsg & in) = default;
         void set_format(const std::string &f) {
-            Parser n(f);
-            p = n;
+            p = Parser(f);
         }
-
-        bool set_value(const std::string & name, const std::string & value){ return p.set_value(name, value); }
+        void set_format(StructMsg &f) {
+            p = f.p;
+        }
+        
+        bool set_value(const std::string & name, const std::string & value){ 
+            return p.set_value(name, value); 
+        }
         std::string serialize(PrimitiveMsg * msg) {
-            set_value("MSG", msg->get_msg());
-            set_value("LEVEL", LogLevel::to_str(msg->get_level()));
-            set_value("TIME", std::to_string(msg->get_time()));
+            p.set_value("MSG", msg->get_msg());
+            p.set_value("LEVEL", LogLevel::to_str(msg->get_level()));
+            p.set_value("TIME", std::to_string(msg->get_time()));
 
             return p.get_string(); 
         }
         ~StructMsg(){}
 };
 
-using ThrTempls = std::map<std::thread::id, StructMsg>;
+using ThrTempls = std::map<std::thread::id, std::unique_ptr<StructMsg> >;
 
 class BaseOutputter {
     protected:
         bounded_buffer<PrimitiveMsg *> & buffer;
-        virtual void write_msg(std::string) = 0;
+        virtual void write_msg(const std::string&) = 0;
         std::atomic<bool> & is_worked;
         ThrTempls & log_templs;
     public:
@@ -157,15 +163,16 @@ class BaseOutputter {
             while(is_worked.load()) {
                 PrimitiveMsg * msg;
                 buffer.pop_back(&msg);
-                write_msg(log_templs[msg->get_thr()].serialize(msg));
+                write_msg(log_templs[msg->get_thr()]->serialize(msg));
                 delete msg;
             }
         }
+        virtual ~BaseOutputter() {}
 };
 
 class ConsoleOutputter: public BaseOutputter {
     protected:
-        void write_msg(std::string msg) override { std::cout << msg + "\n"; }
+        void write_msg(const std::string & msg) override { std::cout << msg + "\n"; }
     public:
         ConsoleOutputter(
             bounded_buffer<PrimitiveMsg *> & in_buf, 
@@ -191,18 +198,33 @@ class CppLogger {
         std::atomic<bool> is_work;
         std::unique_ptr<BaseOutputter> out;
         StructMsg base_format;
+        std::thread output_thr;
+        std::mutex m;
 
-        const size_t default_capacity = 50;
+        static size_t const default_capacity = 50;
 
-        CppLogger(): buffer(default_capacity), is_work(false), out(std::make_unique<ConsoleOutputter>(buffer, is_work, log_templs)) {
+        CppLogger(): 
+            buffer(default_capacity), 
+            is_work(true), 
+            out(std::make_unique<ConsoleOutputter>(buffer, is_work, log_templs)), 
+            output_thr(&BaseOutputter::work, out.get()) 
+        {
             std::cout << "Create CppLogger instance from thread " << std::this_thread::get_id() << std::endl;
+            reg_thread();
         }
-        ~CppLogger() {}
+        ~CppLogger() { output_thr.join(); }
         ThrTempls::iterator find_and_insert_thr(std::thread::id thr_id) {
             ThrTempls::iterator lb = log_templs.lower_bound(thr_id);
-            if(lb == log_templs.end() || log_templs.key_comp()(thr_id, lb->first))
-                log_templs.insert(lb, ThrTempls::value_type(thr_id, base_format));
+            if(lb == log_templs.end() || log_templs.key_comp()(thr_id, lb->first)) {
+                lb = log_templs.insert(lb, ThrTempls::value_type(thr_id, std::make_unique<StructMsg>()));
+                lb->second->set_format(base_format);
+            }
             return lb;
+        }
+
+        void set_base_format_to_all() {
+            for(auto & el: log_templs) 
+                el.second->set_format(base_format);
         }
     public:
         static CppLogger & get_logger() {
@@ -213,23 +235,32 @@ class CppLogger {
         CppLogger & operator=(const CppLogger&) = delete;
 
         std::pair<bool, std::string> set_base_format(const std::string &f) { 
+            std::lock_guard<std::mutex> lock(m);
             try {
                 base_format.set_format(f); 
             } catch (std::string s) {
                 return std::pair<bool, std::string>(false, s);
             }
+            set_base_format_to_all();
             return std::pair<bool, std::string>(true, "");
         }
 
         bool set_glob_value(std::string name, std::string value) { 
-            return base_format.set_value(name, value); 
+            std::lock_guard<std::mutex> lock(m);
+            bool res = base_format.set_value(name, value);
+            if (!res) return res;
+            for(auto & el: log_templs) 
+                el.second->set_value(name, value);
+            return res; 
         }
         void reg_thread() { 
+            std::lock_guard<std::mutex> lock(m);
             find_and_insert_thr(std::this_thread::get_id());
         }
-        bool set_thr_value(std::string name, std::string value) { 
+        bool set_thr_value(std::string name, std::string value) {
+            std::lock_guard<std::mutex> lock(m); 
             ThrTempls::iterator lb = find_and_insert_thr(std::this_thread::get_id());
-            return lb->second.set_value(name, value);
+            return lb->second->set_value(name, value);
         }
 
         void trace_msg(const std::string & msg) {
