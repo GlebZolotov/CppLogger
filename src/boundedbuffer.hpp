@@ -36,15 +36,19 @@ class bounded_buffer {
             m_not_empty.notify_one();
         }
 
-        void pop_back(value_type* pItem) {
+        void pop_back(value_type* pItem, std::atomic<bool> & is_work) {
             boost::mutex::scoped_lock lock(m_mutex);
-            m_not_empty.wait(lock, boost::bind(&bounded_buffer<value_type>::is_not_empty, this));
-            *pItem = std::move(m_container[--m_unread]);
-            lock.unlock();
-            m_not_full.notify_one();
+            while(is_work.load()){
+                if (m_not_empty.wait_for(lock, boost::chrono::seconds(1), boost::bind(&bounded_buffer<value_type>::is_not_empty, this))) {
+                    *pItem = m_container[--m_unread];
+                    lock.unlock();
+                    m_not_full.notify_one();
+                    return;
+                }
+            }
         }
 
-        unsigned int cur_count() const { return (int)m_unread; }
+        unsigned int cur_count() { boost::mutex::scoped_lock lock(m_mutex); return (int)m_unread; }
 
     private:
         bounded_buffer(const bounded_buffer&);              // Disabled copy constructor

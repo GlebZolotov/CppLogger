@@ -160,9 +160,10 @@ class BaseOutputter {
             is_worked(in_a),
             log_templs(l) {}
         void work() {
-            while(is_worked.load()) {
+            while(is_worked.load() || buffer.cur_count() > 0) {
                 PrimitiveMsg * msg;
-                buffer.pop_back(&msg);
+                buffer.pop_back(&msg, is_worked);
+                if (!is_worked.load() && buffer.cur_count() == 0) return;
                 write_msg(log_templs[msg->get_thr()]->serialize(msg));
                 delete msg;
             }
@@ -209,10 +210,15 @@ class CppLogger {
             out(std::make_unique<ConsoleOutputter>(buffer, is_work, log_templs)), 
             output_thr(&BaseOutputter::work, out.get()) 
         {
-            std::cout << "Create CppLogger instance from thread " << std::this_thread::get_id() << std::endl;
+            std::cerr << "Create CppLogger instance" << std::endl;
             reg_thread();
         }
-        ~CppLogger() { output_thr.join(); }
+        ~CppLogger() { 
+            std::cerr << "Wait 5s for destroying CppLogger" << std::endl;
+            boost::this_thread::sleep_for(boost::chrono::seconds(5)); 
+            is_work.store(false); 
+            output_thr.join(); 
+        }
         ThrTempls::iterator find_and_insert_thr(std::thread::id thr_id) {
             ThrTempls::iterator lb = log_templs.lower_bound(thr_id);
             if(lb == log_templs.end() || log_templs.key_comp()(thr_id, lb->first)) {
