@@ -91,11 +91,19 @@ class Parser {
             while (found != std::string::npos) {
                 found = format.find('<', found);
                 simple_text.emplace_back(format.substr(found_prev, found - found_prev));
-                if (found == std::string::npos) return;
+                if (found == std::string::npos) break;
                 found_prev = found + 1;
                 found = format.find('>', found);
                 vars.emplace_back(format.substr(found_prev, found - found_prev), "");
                 found_prev = found + 1;
+            }
+            for(int i = vars.size() - 1; i >= 0; i--) {
+                char * find_env = std::getenv(vars[i].first.c_str());
+                if (find_env == nullptr) continue;
+                // Found env var
+                simple_text[i] += std::string(find_env) + simple_text[i+1];
+                vars.erase(vars.begin() + i);
+                simple_text.erase(simple_text.begin() + i + 1);
             }
         }
         Parser& operator=(const Parser&) = default;

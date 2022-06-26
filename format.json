@@ -4,5 +4,6 @@
     "time": "<TIME>",
     "thr": "<THREAD>",
     "version": "<VERS>",
+    "env_var": "<SP_VALUE>",
     "start_tag": "solver.log"
 }
