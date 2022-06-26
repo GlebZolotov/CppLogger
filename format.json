@@ -3,5 +3,6 @@
     "level": "<LEVEL>",
     "time": "<TIME>",
     "thr": "<THREAD>",
-    "version": "<VERS>"
+    "version": "<VERS>",
+    "start_tag": "solver.log"
 }

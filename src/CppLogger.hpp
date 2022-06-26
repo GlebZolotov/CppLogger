@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <regex>
 #include <mutex>
+#include <boost/asio.hpp>
 
 namespace LogLevel {
     enum Level { TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL };
@@ -159,6 +160,7 @@ class BaseOutputter {
             buffer(in_buf), 
             is_worked(in_a),
             log_templs(l) {}
+        virtual std::pair<bool, std::string> init(std::string host, std::string port) {}
         void work() {
             while(is_worked.load() || buffer.cur_count() > 0) {
                 PrimitiveMsg * msg;
@@ -180,6 +182,48 @@ class ConsoleOutputter: public BaseOutputter {
             std::atomic<bool> & in_a, 
             ThrTempls &l
         ): BaseOutputter(in_buf, in_a, l) {}
+};
+
+class HttpOutputter: public BaseOutputter {
+    private:
+        boost::asio::io_context io_context;
+        boost::asio::io_service service;
+        boost::asio::ip::tcp::endpoint ep;
+        boost::asio::ip::tcp::socket sock;
+    protected:
+        void write_msg(const std::string & msg) override {
+            boost::asio::streambuf request;
+            std::ostream request_stream(&request);
+
+            request_stream << "POST / HTTP/1.1\r\n";
+            request_stream << "Host: localhost:24224\r\n";
+            request_stream << "User-Agent: curl/7.68.0\r\n";
+            request_stream << "Accept: */*\r\n";
+            request_stream << "Content-Type: application/json\r\n";
+            request_stream << "Content-Length: " << msg.length() << "\r\n";    
+            request_stream << "Connection: close\r\n\r\n";  //NOTE THE Double line feed
+            request_stream << msg;
+
+            boost::asio::write(sock, request);
+        }
+    public:
+        HttpOutputter(
+            bounded_buffer<PrimitiveMsg *> & in_buf, 
+            std::atomic<bool> & in_a, 
+            ThrTempls &l
+        ): BaseOutputter(in_buf, in_a, l), sock(service) {}
+        std::pair<bool, std::string> init(std::string host, std::string port) override {
+            try{
+                boost::asio::ip::tcp::resolver resolver(service);
+                boost::asio::ip::tcp::resolver::query query(host, port);
+                boost::asio::ip::tcp::resolver::iterator iter = resolver.resolve(query);
+                ep = iter->endpoint();
+                sock.connect(ep);
+                return std::pair<bool, std::string>(true, "Connection init successfully!");
+            } catch (std::exception& e) {
+                return std::pair<bool, std::string>(false, e.what());
+            }
+        }
 };
 
 // class ThreadData {
@@ -207,10 +251,16 @@ class CppLogger {
         CppLogger(): 
             buffer(default_capacity), 
             is_work(true), 
-            out(std::make_unique<ConsoleOutputter>(buffer, is_work, log_templs)), 
+            out(std::make_unique<HttpOutputter>(buffer, is_work, log_templs)), 
             output_thr(&BaseOutputter::work, out.get()) 
         {
             std::cerr << "Create CppLogger instance" << std::endl;
+            std::pair<bool, std::string> res = out->init("localhost", "24224");
+            if (!res.first) {
+                std::cerr << "Failed to init logger: " << res.second << std::endl;
+                is_work.store(false);
+                return;
+            }
             reg_thread();
         }
         ~CppLogger() { 
