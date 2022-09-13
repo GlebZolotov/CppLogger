@@ -221,12 +221,12 @@ class ConsoleOutputter: public BaseOutputter {
 
 class HttpOutputter: public BaseOutputter {
     private:
-        boost::asio::io_context io_context;
         boost::asio::io_service service;
+        boost::asio::io_context io_context;
         boost::asio::ip::tcp::endpoint ep;
-        boost::asio::ip::tcp::socket sock;
 
         std::string host;
+        std::string port;
         std::string path_to_file;
         std::ofstream fout;
 
@@ -234,26 +234,31 @@ class HttpOutputter: public BaseOutputter {
 
         bool is_success_last;
     protected:
-        std::pair<bool, std::string> send_message() {
-            std::pair<bool, std::string> res(false, "");
-            boost::asio::write(sock, request);
-            sock.shutdown(boost::asio::ip::tcp::socket::shutdown_send);
-
+        bool read_with_timeout(boost::asio::ip::tcp::socket & s, std::string & res) {
             // read for max 5s
             boost::asio::steady_timer timer(io_context, std::chrono::seconds(5));
-            timer.async_wait([&](boost::system::error_code ec) { sock.cancel(); });
-
+            timer.async_wait([&](boost::system::error_code ec) { s.cancel(); });
+            
             std::string reply_buf;
             boost::system::error_code reply_ec;
-            boost::asio::async_read(sock, boost::asio::dynamic_buffer(res.second, 2048),
-                [&](boost::system::error_code ec, size_t) { timer.cancel(); reply_ec = ec; });
+            boost::asio::async_read(s, boost::asio::dynamic_buffer(res, 2048), 
+                [&](boost::system::error_code ec, size_t size) { timer.cancel(); reply_ec = ec; });
 
             io_context.run();
 
             if (!reply_ec || reply_ec == boost::asio::error::eof) {
-                std::cout << "Response:\n" << res.second << std::endl;
-                res.first = true;
+                std::cout << "Response:\n" << res << std::endl;
             }
+            return true; 
+        }
+        std::pair<bool, std::string> send_message() {
+            std::pair<bool, std::string> res(false, "");
+            boost::asio::ip::tcp::socket sock(io_context);
+            sock.connect(ep);
+            std::cout << "Size of send: " << boost::asio::write(sock, request) << std::endl;
+            //sock.shutdown(boost::asio::ip::tcp::socket::shutdown_send);
+            res.first = read_with_timeout(sock, res.second);
+            io_context.reset();
             return res;
         }
         void write_msg(const std::string & msg) override {
@@ -261,7 +266,7 @@ class HttpOutputter: public BaseOutputter {
                 std::ostream request_stream(&request);
 
                 request_stream << "POST / HTTP/1.1\r\n";
-                request_stream << "Host: " << host << "\r\n";
+                request_stream << "Host: " << host << ":" << port << "\r\n";
                 request_stream << "User-Agent: curl/7.68.0\r\n";
                 request_stream << "Accept: */*\r\n";
                 request_stream << "Content-Type: application/json\r\n";
@@ -295,15 +300,16 @@ class HttpOutputter: public BaseOutputter {
             bounded_buffer<PrimitiveMsg *> & in_buf, 
             std::atomic<bool> & in_a, 
             ThrTempls &l
-        ): BaseOutputter(in_buf, in_a, l), sock(service), is_success_last(true) {}
+        ): BaseOutputter(in_buf, in_a, l), is_success_last(true) {}
         std::pair<bool, std::string> init(Options settings) override {
             try{
                 path_to_file = settings.path_to_file;
+                host = settings.host;
+                port = settings.port;
                 boost::asio::ip::tcp::resolver resolver(service);
-                boost::asio::ip::tcp::resolver::query query(settings.host, settings.port);
+                boost::asio::ip::tcp::resolver::query query(host, port);
                 boost::asio::ip::tcp::resolver::iterator iter = resolver.resolve(query);
                 ep = iter->endpoint();
-                sock.connect(ep);
                 return std::pair<bool, std::string>(true, "Connection init successfully!");
             } catch (std::exception& e) {
                 return std::pair<bool, std::string>(false, e.what());
