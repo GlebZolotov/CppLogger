@@ -17,19 +17,19 @@
 #include <boost/bind.hpp>
 
 template <class T>
-class bounded_buffer {
+class ring_buffer {
     public:
         typedef boost::circular_buffer<T> container_type;
         typedef typename container_type::size_type size_type;
         typedef typename container_type::value_type value_type;
         typedef typename boost::call_traits<value_type>::param_type param_type;
 
-        explicit bounded_buffer(size_type capacity) : m_unread(0), m_container(capacity) {}
+        explicit ring_buffer(size_type capacity) : m_unread(0), m_container(capacity) {}
 
         void push_front(param_type item) {
         // param_type represents the "best" way to pass a parameter of type value_type to a method
             boost::mutex::scoped_lock lock(m_mutex);
-            m_not_full.wait(lock, boost::bind(&bounded_buffer<value_type>::is_not_full, this));
+            m_not_full.wait(lock, boost::bind(&ring_buffer<value_type>::is_not_full, this));
             m_container.push_front(item);
             ++m_unread;
             lock.unlock();
@@ -39,7 +39,7 @@ class bounded_buffer {
         void pop_back(value_type* pItem, std::atomic<bool> & is_work) {
             boost::mutex::scoped_lock lock(m_mutex);
             while(is_work.load()){
-                if (m_not_empty.wait_for(lock, boost::chrono::seconds(1), boost::bind(&bounded_buffer<value_type>::is_not_empty, this))) {
+                if (m_not_empty.wait_for(lock, boost::chrono::seconds(1), boost::bind(&ring_buffer<value_type>::is_not_empty, this))) {
                     *pItem = m_container[--m_unread];
                     lock.unlock();
                     m_not_full.notify_one();
@@ -51,8 +51,8 @@ class bounded_buffer {
         unsigned int cur_count() { boost::mutex::scoped_lock lock(m_mutex); return (int)m_unread; }
 
     private:
-        bounded_buffer(const bounded_buffer&);              // Disabled copy constructor
-        bounded_buffer& operator = (const bounded_buffer&); // Disabled assign operator
+        ring_buffer(const ring_buffer&);              // Disabled copy constructor
+        ring_buffer& operator = (const ring_buffer&); // Disabled assign operator
 
         bool is_not_full() const { return m_unread < m_container.capacity(); }
         bool is_not_empty() const { return m_unread > 0; }

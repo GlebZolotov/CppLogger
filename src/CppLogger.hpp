@@ -3,13 +3,19 @@
 #include <string>
 #include <map>
 #include <thread>
-#include "boundedbuffer.hpp"
+#include "RingBuffer.hpp"
 #include <algorithm>
 #include <regex>
 #include <mutex>
+#include <iomanip>
+#include <ctime>
+#include <sstream>
 #include <cstdio>
+#include <fstream>
 #include <boost/asio.hpp>
 #include <boost/algorithm/string.hpp>
+
+namespace CppLogger{
 
 namespace LogLevel {
     enum Level { UNKNOWN, TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL };
@@ -57,6 +63,15 @@ struct Options {
     std::string level;
     size_t buf_size;
 };
+
+std::string get_cur_time() {
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%d-%m-%Y %H-%M-%S");
+    return oss.str();
+}
 
 class PrimitiveMsg {
     private:
@@ -182,13 +197,13 @@ using ThrTempls = std::map<std::thread::id, std::unique_ptr<StructMsg> >;
 
 class BaseOutputter {
     protected:
-        bounded_buffer<PrimitiveMsg *> & buffer;
+        ring_buffer<PrimitiveMsg *> & buffer;
         virtual void write_msg(const std::string&) = 0;
         std::atomic<bool> & is_worked;
         ThrTempls & log_templs;
     public:
         BaseOutputter(
-            bounded_buffer<PrimitiveMsg *> & in_buf, 
+            ring_buffer<PrimitiveMsg *> & in_buf, 
             std::atomic<bool> & in_a, 
             ThrTempls &l
         ): 
@@ -213,7 +228,7 @@ class ConsoleOutputter: public BaseOutputter {
         void write_msg(const std::string & msg) override { std::cout << msg + "\n"; }
     public:
         ConsoleOutputter(
-            bounded_buffer<PrimitiveMsg *> & in_buf, 
+            ring_buffer<PrimitiveMsg *> & in_buf, 
             std::atomic<bool> & in_a, 
             ThrTempls &l
         ): BaseOutputter(in_buf, in_a, l) {}
@@ -247,15 +262,23 @@ class HttpOutputter: public BaseOutputter {
             io_context.run();
 
             if (!reply_ec || reply_ec == boost::asio::error::eof) {
-                std::cout << "Response:\n" << res << std::endl;
-            }
-            return true; 
+                std::string status_code = res.substr(res.find(" ") + 1, 3);
+                std::string body = res.substr(res.find("\r\n\r\n") + 4);
+                res = get_cur_time() + " - " + status_code + " " + body;
+                if (status_code == "500")
+                    return false;
+                else 
+                    return true;
+            } else {
+                res = get_cur_time() + " - Timeout";
+                return false;
+            } 
         }
         std::pair<bool, std::string> send_message() {
             std::pair<bool, std::string> res(false, "");
             boost::asio::ip::tcp::socket sock(io_context);
             sock.connect(ep);
-            std::cout << "Size of send: " << boost::asio::write(sock, request) << std::endl;
+            boost::asio::write(sock, request);
             //sock.shutdown(boost::asio::ip::tcp::socket::shutdown_send);
             res.first = read_with_timeout(sock, res.second);
             io_context.reset();
@@ -275,12 +298,14 @@ class HttpOutputter: public BaseOutputter {
                 request_stream << msg;
             }
             std::pair<bool, std::string> resp = send_message();
+            std::cout << resp.second << "\n";
             if (resp.first) {
                 if (is_success_last) return;
                 is_success_last = true;
                 fout.close();
                 std::ifstream fin(path_to_file);
                 std::string new_msg;
+                std::cout << get_cur_time() + " - Write file to server\n";
                 while(std::getline(fin, new_msg)) {
                     write_msg(new_msg);
                 }
@@ -291,13 +316,14 @@ class HttpOutputter: public BaseOutputter {
                     is_success_last = false;
                     fout = std::ofstream(path_to_file);
                 } else {
+                    std::cout << get_cur_time() + " - Put message to file\n";
                     fout << msg;
                 }
             }
         }
     public:
         HttpOutputter(
-            bounded_buffer<PrimitiveMsg *> & in_buf, 
+            ring_buffer<PrimitiveMsg *> & in_buf, 
             std::atomic<bool> & in_a, 
             ThrTempls &l
         ): BaseOutputter(in_buf, in_a, l), is_success_last(true) {}
@@ -330,7 +356,7 @@ class HttpOutputter: public BaseOutputter {
 class CppLogger {
     private:
         ThrTempls log_templs;
-        bounded_buffer< PrimitiveMsg * > buffer;
+        ring_buffer< PrimitiveMsg * > buffer;
         std::atomic<bool> is_work;
         std::unique_ptr<BaseOutputter> out;
         StructMsg base_format;
@@ -442,3 +468,4 @@ class CppLogger {
                 buffer.push_front(new PrimitiveMsg(msg, LogLevel::CRITICAL));
         }
 };
+}

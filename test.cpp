@@ -5,16 +5,16 @@
 
 
 int main(){
-    Options settings;
+    CppLogger::Options settings;
     settings.host = "localhost";
     settings.port = "24224";
     settings.path_to_file = "test.log";
     settings.path_to_template = "../format.json";
-    settings.level = LogLevel::INFO;
+    settings.level = CppLogger::LogLevel::INFO;
     settings.buf_size = 1000;
     settings.output_type = "http";
 
-    CppLogger & log(CppLogger::get_logger(&settings));
+    CppLogger::CppLogger & log(CppLogger::CppLogger::get_logger(&settings));
 
     std::ifstream t("../format.json");
     std::stringstream b;
