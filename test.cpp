@@ -1,7 +1,17 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <thread>
 #include "src/CppLogger.hpp"
+
+void loop(int index) {
+    CppLogger::CppLogger & log(CppLogger::CppLogger::get_logger());
+    log.set_thr_value("THREAD", "loop" + std::to_string(index));
+
+    for (int i=0; i < 1000000; i++) {
+        log.info_msg("Hello from " + std::to_string(i));
+    }
+}
 
 
 int main(){
@@ -28,5 +38,7 @@ int main(){
     log.info_msg("Hello");
     log.info_msg("World");
 
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::thread thr(loop, 0);
+    loop(1);
+    thr.join();   
 }

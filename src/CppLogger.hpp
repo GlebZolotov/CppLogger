@@ -116,7 +116,7 @@ class BaseOutputter {
             buffer(in_buf), 
             is_worked(in_a),
             log_templs(l) {}
-        virtual std::pair<bool, std::string> init(Options settings) { return std::pair<bool, std::string>(false, ""); }
+        virtual std::pair<bool, std::string> init(Options settings) { return std::pair<bool, std::string>(true, ""); }
         void work();
         virtual ~BaseOutputter() {}
 };
