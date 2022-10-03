@@ -1,5 +1,10 @@
 #include "CppLogger.hpp"
 
+#include <boost/uuid/uuid.hpp>            // uuid class
+#include <boost/uuid/uuid_generators.hpp> // generators
+#include <boost/uuid/uuid_io.hpp>         // streaming operators etc.
+
+
 std::string CppLogger::LogLevel::to_str(LogLevel::Level a) {
     switch (a) {
     case TRACE:
@@ -54,6 +59,11 @@ std::string CppLogger::get_iso_time() {
                                          "%FT%T.", std::localtime(&coarse)),
                   5, "%03luZ", fine.time_since_epoch().count() % 1000);
     return buffer;
+}
+
+std::string CppLogger::get_uuid() {
+    boost::uuids::uuid uuid = boost::uuids::random_generator()();
+    return boost::uuids::to_string(uuid);
 }
 
 bool CppLogger::Parser::is_true(const std::string & format) const {

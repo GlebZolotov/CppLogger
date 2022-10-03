@@ -35,6 +35,7 @@ struct Options {
 
 std::string get_cur_time();
 std::string get_iso_time();
+std::string get_uuid();
 
 class PrimitiveMsg {
     private:
@@ -93,6 +94,8 @@ class StructMsg {
             p.set_value("MSG", msg->get_msg());
             p.set_value("LEVEL", LogLevel::to_str(msg->get_level()));
             p.set_value("TIME", std::to_string(msg->get_time()));
+
+            p.set_value("_LOGGER_OPTIONS_UUID", get_uuid());
 
             return p.get_string(); 
         }
